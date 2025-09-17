@@ -1,0 +1,1 @@
+{"event": "train_begin", "args": {"output_dir": "artifacts/flan_t5_minutes_lora", "learning_rate": 0.0002, "per_device_train_batch_size": 2, "per_device_eval_batch_size": 2, "num_train_epochs": 4, "seed": 42}, "ts": "2025-09-15 18:34:54"}
