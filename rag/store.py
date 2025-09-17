@@ -1,125 +1,69 @@
 # rag/store.py
-import os, json
-from typing import List, Dict, Tuple
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain.schema import Document
-from config import EMBED_MODEL, INDEX_DIR, MEETINGS_DIR
+import os, time, logging
+from typing import List, Dict
+from sentence_transformers import SentenceTransformer
+import numpy as np
+# import your FAISS/Qdrant client here...
 
-# from langchain_community.embeddings import HuggingFaceEmbeddings   # old (deprecated)
-from langchain_huggingface import HuggingFaceEmbeddings               # new
+LOG = logging.getLogger("rag.store")
+DEVICE = os.getenv("RAG_DEVICE", "mps")  # mps|cpu|cuda
+MODEL_NAME = os.getenv("RAG_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
-def _emb():
-    return HuggingFaceEmbeddings(
-        model_name=EMBED_MODEL,
-        encode_kwargs={"batch_size": 64, "show_progress_bar": True, "normalize_embeddings": True}
-    )
+_model = None
+def get_model():
+    global _model
+    if _model is None:
+        t0 = time.time()
+        LOG.info("embed: loading model=%s device=%s", MODEL_NAME, DEVICE)
+        _model = SentenceTransformer(MODEL_NAME, device=DEVICE)
+        LOG.info("embed: model ready in %.2fs", time.time() - t0)
+    return _model
 
-def _index_path():
-    return os.path.join(INDEX_DIR, "faiss_idx")
-
-def _chunk(text: str, size: int = 800, overlap: int = 80) -> List[str]:
+def _chunk_text(s: str, max_chars: int = 1000, overlap: int = 100) -> List[str]:
+    s = (s or "").strip()
+    if not s:
+        return []
     chunks = []
-    start = 0
-    while start < len(text):
-        end = min(len(text), start + size)
-        chunks.append(text[start:end])
-        start = end - overlap
-        if start < 0: start = 0
+    i = 0
+    while i < len(s):
+        end = min(len(s), i + max_chars)
+        chunks.append(s[i:end])
+        i = end - overlap
+        if i < 0:
+            i = 0
+        if end == len(s):
+            break
     return chunks
 
-def build_docs(transcript: str, minutes_md: str, meta: Dict) -> List[Document]:
-    docs: List[Document] = []
-    for ch in _chunk(transcript):
-        docs.append(Document(page_content=ch, metadata={**meta, "source":"transcript"}))
-    for ch in _chunk(minutes_md):
-        docs.append(Document(page_content=ch, metadata={**meta, "source":"minutes"}))
-    return docs
+def _embed_texts(texts: List[str], batch_size: int = 16) -> np.ndarray:
+    m = get_model()
+    LOG.info("embed: encoding %d chunks (batch_size=%d)", len(texts), batch_size)
+    t0 = time.time()
+    embs = m.encode(texts, batch_size=batch_size, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=True)
+    LOG.info("embed: done in %.2fs", time.time() - t0)
+    return embs
 
-def upsert_meeting(transcript: str, minutes_md: str, meta: Dict):
-    emb = _emb()
-    path = _index_path()
-    docs = build_docs(transcript, minutes_md, meta)
+def upsert_meeting(transcript: str, minutes: str, meta: Dict):
+    t0 = time.time()
+    LOG.info("upsert: start | title=%s date=%s", meta.get("title"), meta.get("date"))
 
-    if os.path.exists(path):
-        vs = FAISS.load_local(path, emb, allow_dangerous_deserialization=True)
-        vs.add_documents(docs)
-        vs.save_local(path)
-    else:
-        vs = FAISS.from_documents(docs, emb)
-        os.makedirs(INDEX_DIR, exist_ok=True)
-        vs.save_local(path)
+    # 1) chunk
+    tr_chunks = _chunk_text(transcript, max_chars=1200, overlap=150)
+    mm_chunks = _chunk_text(minutes,    max_chars=1200, overlap=150)
+    LOG.info("upsert: chunks | transcript=%d minutes=%d", len(tr_chunks), len(mm_chunks))
 
-def upsert_meeting_dir(meeting_dir: str):
-    """meeting_dir must contain transcript.txt, minutes.md, meta.json"""
-    with open(os.path.join(meeting_dir, "transcript.txt"), "r", encoding="utf-8") as f:
-        transcript = f.read()
-    with open(os.path.join(meeting_dir, "minutes.md"), "r", encoding="utf-8") as f:
-        minutes_md = f.read()
-    with open(os.path.join(meeting_dir, "meta.json"), "r", encoding="utf-8") as f:
-        meta = json.load(f)
-    upsert_meeting(transcript, minutes_md, meta)
+    # 2) embed
+    texts = [f"[TRANSCRIPT] {c}" for c in tr_chunks] + [f"[MINUTES] {c}" for c in mm_chunks]
+    if not texts:
+        LOG.warning("upsert: no text to index; skipping.")
+        return
 
-def reindex_all():
-    """Rebuild FAISS from MEETINGS_DIR"""
-    emb = _emb()
-    path = _index_path()
-    if os.path.exists(path):
-        # remove old index to ensure clean rebuild
-        for f in os.listdir(INDEX_DIR):
-            os.remove(os.path.join(INDEX_DIR, f))
+    vecs = _embed_texts(texts, batch_size=8)  # small batches are safer on MPS/CPU
 
-    all_docs: List[Document] = []
-    for mid in sorted(os.listdir(MEETINGS_DIR)):
-        mdir = os.path.join(MEETINGS_DIR, mid)
-        if not os.path.isdir(mdir): continue
-        try:
-            with open(os.path.join(mdir, "transcript.txt"), "r", encoding="utf-8") as f:
-                transcript = f.read()
-            with open(os.path.join(mdir, "minutes.md"), "r", encoding="utf-8") as f:
-                minutes_md = f.read()
-            with open(os.path.join(mdir, "meta.json"), "r", encoding="utf-8") as f:
-                meta = json.load(f)
-            all_docs += build_docs(transcript, minutes_md, meta)
-        except FileNotFoundError:
-            continue
+    # 3) write to vector store (replace with your FAISS/Qdrant upsert)
+    # index.upsert(vectors=vecs, payloads=..., ids=...)
+    LOG.info("upsert: vector_store write start (n=%d)", len(vecs))
+    # ... your write code ...
+    LOG.info("upsert: vector_store write done")
 
-    if not all_docs:
-        raise RuntimeError("No meetings found in storage/meetings to index.")
-
-    vs = FAISS.from_documents(all_docs, emb)
-    os.makedirs(INDEX_DIR, exist_ok=True)
-    vs.save_local(path)
-
-def search(query: str, k: int = 8, scope: str = "all", meeting_id: str = "") -> List[Tuple[Document, float]]:
-    emb = _emb()
-    vs = FAISS.load_local(_index_path(), emb, allow_dangerous_deserialization=True)
-    results = vs.similarity_search_with_score(query, k=k)
-    if scope == "this" and meeting_id:
-        results = [(d, s) for (d, s) in results if d.metadata.get("meeting_id") == meeting_id]
-    return results
-
-def keyword_rerank(query: str, hits: List[Tuple[Document, float]], topn: int = 4):
-    q = [w.lower() for w in query.split() if len(w) > 3]
-    scored = []
-    for d, s in hits:
-        t = d.page_content.lower()
-        kw = sum(t.count(w) for w in q)
-        scored.append((d, s, kw))
-    scored.sort(key=lambda x: (-x[2], x[1]))  # more keyword hits, then lower distance
-    return [(d, s) for d, s, _ in scored[:topn]]
-
-if __name__ == "__main__":
-    import argparse
-    p = argparse.ArgumentParser()
-    p.add_argument("--upsert_dir", help="Path to storage/meetings/<meeting_id>")
-    p.add_argument("--reindex_all", action="store_true")
-    args = p.parse_args()
-    if args.reindex_all:
-        reindex_all()
-        print("Rebuilt FAISS index.")
-    elif args.upsert_dir:
-        upsert_meeting_dir(args.upsert_dir)
-        print(f"Upserted {args.upsert_dir}")
-    else:
-        print("Use --reindex_all or --upsert_dir <path>")
+    LOG.info("upsert: end in %.2fs", time.time() - t0)
