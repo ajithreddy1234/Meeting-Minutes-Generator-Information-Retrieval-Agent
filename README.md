@@ -1,4 +1,3 @@
-# I-mbesideyou-Inc.---Data-Scientist-Role
 # 📝 Meeting Minutes & Q&A Agent
 
 **Author:** Pochimireddy Ajith Reddy  
@@ -9,7 +8,6 @@
 
 ## 📌 Project Overview
 
-This project was developed as part of the **“I’m Beside You” Data Science Internship Assessment**.
 
 The system automates the generation of **structured Minutes of Meeting (MoM)** from raw meeting transcripts (or audio, via Whisper), and supports **retrieval-augmented Q&A** across past meetings.
 
@@ -26,7 +24,5 @@ The system automates the generation of **structured Minutes of Meeting (MoM)** f
    - Allows asking questions about **current meeting** or **all past meetings**.  
    - Retrieves relevant chunks and composes concise answers with citations.
 
----
 
-## 📂 Repository Structure
 
