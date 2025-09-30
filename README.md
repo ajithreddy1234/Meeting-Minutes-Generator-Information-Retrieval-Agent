@@ -1,4 +1,4 @@
-# 📝 Meeting Minutes & Q&A Agent
+# Meeting Minutes & Q&A Agent
 
 **Author:** Pochimireddy Ajith Reddy  
 **University:** Indian Institute of Technology Hyderabad  
@@ -6,7 +6,7 @@
 
 ---
 
-## 📌 Project Overview
+## Project Overview
 
 
 The system automates the generation of **structured Minutes of Meeting (MoM)** from raw meeting transcripts (or audio, via Whisper), and supports **retrieval-augmented Q&A** across past meetings.
